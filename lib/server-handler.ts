@@ -1,5 +1,6 @@
 import { Socket } from 'node:net'
 import { Request } from './request/request'
+import { finished, Readable } from 'node:stream'
 
 export class ServerHandler {
     public static async read(socket: Socket) {
@@ -23,7 +24,7 @@ export class ServerHandler {
                 if (isBodyReading) {
                     message = Buffer.concat([message, this.readBody(socket)])
 
-                    if (message.length === length) {
+                    if (message.length >= length) {
                         isBodyReading = false
 
                         resolve({ headers, body: message, raw: rawHeaders })
@@ -54,7 +55,7 @@ export class ServerHandler {
 
                         message = this.readBody(socket)
 
-                        if (message.length === length) {
+                        if (message.length >= length) {
                             resolve({ headers, body: message, raw: rawHeaders })
                         } else {
                             isBodyReading = true
@@ -85,32 +86,34 @@ export class ServerHandler {
     }
 
     public static send(data: Buffer, socket: Socket) {
-        let offset = 0
-        let chunkSize = 65000
-
         return new Promise<void>((resolve, reject) => {
-            const sendChunk = () => {
-                if (offset < data.length) {
-                    const size = Math.min(data.length - offset, chunkSize)
-                    const chunk = data.slice(offset, offset + size)
+            const stream = new Readable({
+                highWaterMark: 64 * 1024,
+                read(size) {
+                    if (data.length <= 0) {
+                        this.push(null)
+                        return
+                    }
 
-                    const success = socket.write(chunk, () => {
-                        offset += size
-
-                        if (offset < data.length) {
-                            sendChunk()
-                        } else {
-                            resolve()
-                        }
-                    })
-
-                    if (!success) {
-                        socket.once('drain', sendChunk)
+                    if (data.length > 0) {
+                        const chunk = data.slice(0, size)
+                        data = data.slice(size)
+                        this.push(chunk)
                     }
                 }
-            }
+            })
 
-            sendChunk()
+            stream.on('data', (data) => {
+                socket.write(data)
+            })
+
+            stream.on('end', () => {
+                resolve()
+            })
+
+            stream.on('error', () => {
+                reject()
+            })
         })
     }
 }
